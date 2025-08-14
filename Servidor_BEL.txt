@@ -1,0 +1,8 @@
+HOST: 10.246.15.7 
+USUARIO: cybtest
+PASSWORD: panama2019 
+carpeta: FORMATOS-MT-PDF
+
+cd C:\Users\distu\OneDrive\Documentos\ibm_export_api
+.\venv\Scripts\Activate.ps1
+python .\ftps_test_upload.py --host 10.246.15.7 --user cybtest --password panama2019 --dir /FORMATOS-MT-PDF

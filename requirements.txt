@@ -1,0 +1,8 @@
+fastapi
+uvicorn
+pydantic>=2
+jaydebeapi
+jpype1
+pandas
+openpyxl
+python-dotenv
