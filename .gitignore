@@ -1,0 +1,36 @@
+
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.build/
+dist/
+.eggs/
+
+# Entornos
+.venv/
+env/
+venv/
+
+# Configs locales / claves
+.env
+.env.*
+*.pem
+*.key
+
+# Logs / cachés / cobertura
+*.log
+.coverage*
+coverage.xml
+
+# SO / editores
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Django (si aplica)
+db.sqlite3
+/staticfiles/
+media/
