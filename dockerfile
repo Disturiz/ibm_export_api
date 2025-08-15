@@ -1,47 +1,35 @@
-# Usa una imagen base de Python
-FROM python:3.9-slim
+FROM python:3.12-slim-bookworm
 
-# Instala Java para el uso de jt400.jar
-RUN apt-get update && apt-get install -y openjdk-17-jre && rm -rf /var/lib/apt/lists/*
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+    openjdk-17-jre-headless \
+    build-essential \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
 
-# Crea un directorio de trabajo.
-WORKDIR /app
+ENV JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
+ENV PATH="${JAVA_HOME}/bin:${PATH}"
 
-# Copia los archivos del proyecto
-COPY . /app
+ENV APP_HOME=/app
+WORKDIR ${APP_HOME}
 
-# Copia el jt400.jar a un directorio específico.
-#COPY /usr/yappy-p2pusr-service/jt400.jar /app/lib/jt400.jar
-COPY /lib/jt400.jar /app/lib/jt400.jar
+COPY requirements.txt ./requirements.txt
+RUN python -m pip install --no-cache-dir --upgrade pip \
+    && python -m pip install --no-cache-dir -r requirements.txt
 
+COPY app ./app
+COPY /jt400/jt400.jar /jt400/jt400.jar
 
-# Establece la variable de entorno CLASSPATH
-ENV CLASSPATH="/app/lib/jt400.jar:$CLASSPATH"
+ENV PYTHONUNBUFFERED=1 \
+    JAR_PATH=/app/jt400/jt400.jar \
+    OUTPUT_DIR=/data/output \
+    DEFAULT_SCHEMA=DACCYFILES
 
-# Instala dependencias
-RUN pip install --trusted-host pypi.org --trusted-host pypi.python.org --trusted-host files.pythonhosted.org  --no-cache-dir -r requirements.txt
+RUN useradd -m appuser \
+    && mkdir -p /data/output \
+    && chown -R appuser:appuser /data
 
-# Expone el puerto del servicio
-EXPOSE 4000
-
-# Add build arguments
-ARG HOSTNAME
-ARG AS400_USERNAME
-ARG AS400_PASSWORD
-ARG IMB_ESQUEMA
-ARG IBM_DB_JAR
-ARG AUTH_USER
-ARG AUTH_PASS
-
-
-
-# Add environment variable debugging before running the application
-RUN echo "Environment Variables:" && \
-    echo "HOSTNAME: $HOSTNAME" && \
-    echo "AS400_USERNAME: $AS400_USERNAME" && \
-    echo "AS400_PASSWORD: $AS400_PASSWORD" && \
-    echo "IMB_ESQUEMA: $IMB_ESQUEMA" && \
-    echo "IBM_DB_JAR: $IBM_DB_JAR"
-
-# Comando para ejecutar la aplicación
-CMD printenv && echo "Starting application..." && uvicorn main:app --host 0.0.0.0 --port 4000
+USER appuser
+EXPOSE 8000
+CMD ["uvicorn","app.main:app","--host","0.0.0.0","--port","8000"]

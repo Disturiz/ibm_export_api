@@ -1,0 +1,16 @@
+
+version: "3.9"
+services:
+  api:
+    build: .
+    container_name: ibm_export_api
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      JAR_PATH: /app/jt400/jt400.jar
+      OUTPUT_DIR: /data/output
+    volumes:
+      - ./output:/data/output
+    restart: unless-stopped
