@@ -55,6 +55,9 @@ def export_to_excel(nombre_tabla: str, nombre_archivo: str) -> dict:
 
     # Nombre remoto final
     remote_name = f"{nombre_archivo}.xlsx"
+    # remote_name = f"{nombre_archivo}"
+    remote_name1 = f"{nombre_archivo}"  # cambie le quite la extensión
+    #
 
     uploaded_to = {
         "host": FTP_HOST,
@@ -80,7 +83,7 @@ def export_to_excel(nombre_tabla: str, nombre_archivo: str) -> dict:
             password=FTP_PASSWORD,
             remote_dir=FTP_DIR,
             local_path=local_path,
-            remote_name=remote_name,
+            remote_name=remote_name1,
             use_tls=FTP_TLS,
         )
         kept_local = True
@@ -94,7 +97,7 @@ def export_to_excel(nombre_tabla: str, nombre_archivo: str) -> dict:
             password=FTP_PASSWORD,
             remote_dir=FTP_DIR,
             data=data,
-            remote_name=remote_name,
+            remote_name=remote_name1,  # cambie le quite la extensión
             use_tls=FTP_TLS,
         )
 
