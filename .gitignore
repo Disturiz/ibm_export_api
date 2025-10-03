@@ -12,6 +12,7 @@ dist/
 .venv/
 env/
 venv/
+output/
 
 # Configs locales / claves
 .env
@@ -34,3 +35,12 @@ Thumbs.db
 db.sqlite3
 /staticfiles/
 media/
+
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# IDE
+.vscode/
+.idea/

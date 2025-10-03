@@ -1,27 +1,44 @@
-from fastapi import FastAPI, HTTPException, Security
-from .security import require_api_key
-from .schemas import ExportRequest, ExportResponse
-from .exporter import export_to_excel
+# app/main.py
+from __future__ import annotations
 
-app = FastAPI(
-    title="Exportador IBM i → Excel",
-    swagger_ui_parameters={"persistAuthorization": True},  # opcional
-)
+from typing import Any, Dict, Optional
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel, Field
 
+from app.exporter import export_to_excel
 
-@app.get("/")
-def root():
-    return {"service": "Exportador IBM i → Excel", "docs": "/docs", "health": "/health"}
+app = FastAPI(title="IBM_EXPORT_API_MAIN")
 
 
+# ===== Models =====
+class ExportRequest(BaseModel):
+    tabla: str = Field(..., description="Nombre de la tabla en IBMi")
+    archivo: str = Field(..., description="Nombre base del archivo (sin .xlsx)")
+    metadata: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Metadatos opcionales (logo_path, banner_cols_override, etc.)",
+    )
+
+
+# ===== Endpoints =====
 @app.get("/health")
-def health():
-    return {"ok": True}
+def health() -> Dict[str, Any]:
+    return {"ok": True, "service": "IBM_EXPORT_API_MAIN"}
 
 
-@app.post("/export", response_model=ExportResponse, response_model_exclude_none=True)
-def exportar(req: ExportRequest, _: bool = Security(require_api_key)):
+@app.post("/export")
+def export_endpoint(req: ExportRequest) -> Dict[str, Any]:
     try:
-        return export_to_excel(req.tabla, req.archivo)
+        result = export_to_excel(
+            tabla=req.tabla, archivo=req.archivo, metadata=req.metadata or {}
+        )
+        if not result.get("ok"):
+            # export_to_excel ya retorna 'ok': False con 'error'
+            raise HTTPException(
+                status_code=500, detail=result.get("error", "Fallo al exportar")
+            )
+        return result
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e))
