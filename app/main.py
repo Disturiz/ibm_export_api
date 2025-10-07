@@ -1,22 +1,22 @@
 # app/main.py
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from app.exporter import router as exporter_router
+from app.exporter import router as exporter_router  # <-- importa el router
 
-app = FastAPI(title="IBM Export API")
+app = FastAPI(title="IBM Export API", version="0.1.0")
 
-# CORS (ajusta orígenes según tu front)
-origins = ["http://localhost:5173", "http://127.0.0.1:5173"]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Rutas del módulo exporter
+# ⬇️ registra el router (ruta final: /export)
 app.include_router(exporter_router)
+# Si quieres /api/export, usa:
+# app.include_router(exporter_router, prefix="/api")
 
 
 @app.get("/health")

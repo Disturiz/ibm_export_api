@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import os
 import io
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional
 
 import pandas as pd
 from openpyxl import Workbook
@@ -14,25 +14,17 @@ from openpyxl.utils import get_column_letter
 from fastapi import APIRouter, Body, HTTPException
 from pydantic import BaseModel
 
-# ---- Integraciones del proyecto (con fallback si no están aún) ----
-try:
-    from app.services.ibmi import get_df_from_ibmi  # (tabla: str) -> pd.DataFrame
-except Exception:
-    get_df_from_ibmi = None
-
-try:
-    from app.services.ftp import upload_file  # ver firma en tu proyecto
-except Exception:
-    upload_file = None
+# Composición del logo sobre fondo rojo opaco
+from PIL import Image as PILImage
 
 # ==========================
-# Router público del módulo
+# Router
 # ==========================
 router = APIRouter(tags=["export"])
 
 
 # ==========================
-# Esquema de entrada
+# Request schema
 # ==========================
 class ExportRequest(BaseModel):
     tabla: str
@@ -41,10 +33,9 @@ class ExportRequest(BaseModel):
 
 
 # ==========================
-# Utilidades de formato/IO
+# Utilidades
 # ==========================
 def _env_hex(name: str, default: str) -> str:
-    """Lee color 'RRGGBB' desde env (tolera '#RRGGBB')."""
     val = (os.getenv(name, default) or "").strip()
     if val.startswith("#"):
         val = val[1:]
@@ -55,11 +46,10 @@ def _env_hex(name: str, default: str) -> str:
 
 
 def _argb(rgb_hex: str) -> str:
-    """Convierte 'RRGGBB' -> 'AARRGGBB' opaco."""
     h = rgb_hex.strip().lstrip("#").upper()
     if len(h) != 6:
         raise ValueError("Colors must be 6-hex RGB")
-    return "FF" + h
+    return "FF" + h  # alpha opaco
 
 
 def _resolve_logo_path(logo_path: Optional[str]) -> Optional[str]:
@@ -67,12 +57,12 @@ def _resolve_logo_path(logo_path: Optional[str]) -> Optional[str]:
         return None
     if not os.path.isabs(logo_path):
         app_dir = os.path.dirname(os.path.abspath(__file__))  # .../app
-        candidate = os.path.join(os.path.dirname(app_dir), logo_path)  # raíz del repo
-        if os.path.exists(candidate):
-            return candidate
-        candidate = os.path.join(app_dir, logo_path)  # relativo a /app
-        if os.path.exists(candidate):
-            return candidate
+        cand = os.path.join(os.path.dirname(app_dir), logo_path)  # raíz repo
+        if os.path.exists(cand):
+            return cand
+        cand = os.path.join(app_dir, logo_path)  # relativo a /app
+        if os.path.exists(cand):
+            return cand
     return logo_path if os.path.exists(logo_path) else None
 
 
@@ -84,35 +74,49 @@ def _thin_border() -> Border:
 def _autofit(ws, min_width: int = 9, max_width: int = 45) -> None:
     for col in ws.columns:
         max_len = 0
-        col_letter = get_column_letter(col[0].column)
+        letter = get_column_letter(col[0].column)
         for cell in col:
             if cell.value is None:
                 continue
             s = str(cell.value)
-            if len(s) > max_len:
-                max_len = len(s)
-        ws.column_dimensions[col_letter].width = max(
-            min_width, min(max_len + 2, max_width)
-        )
+            max_len = max(max_len, len(s))
+        ws.column_dimensions[letter].width = max(min_width, min(max_len + 2, max_width))
 
 
-# ——— Estimación de ancho en píxeles (para escalar logo al ancho del merge) ———
+# --- ancho del banner (A1:Ex) en píxeles para construir el lienzo rojo del mismo ancho ---
 def _col_pixels(ws, col_idx: int) -> int:
-    """
-    Aproxima ancho de columna en píxeles.
-    Si no hay width definida, Excel usa ~8.43 (≈64 px).
-    px ≈ width*7 + 5
-    """
     letter = get_column_letter(col_idx)
     width = ws.column_dimensions[letter].width
     if width is None:
-        width = 8.43
-    return int(width * 7 + 5)
+        width = 8.43  # default Excel
+    return int(width * 7 + 5)  # aproximación
 
 
 def _merged_pixels(ws, start_col: int, end_col: int) -> int:
-    """Suma de píxeles aproximados entre columnas start_col..end_col."""
     return sum(_col_pixels(ws, c) for c in range(start_col, end_col + 1))
+
+
+# ==========================
+# Integraciones (IBMi / FTP)
+# ==========================
+try:
+    from app.services.ibmi import get_df_from_ibmi  # (tabla: str) -> pd.DataFrame
+except Exception:
+    get_df_from_ibmi = None
+
+try:
+    from app.services.ftp import upload_file
+except Exception:
+    upload_file = None
+
+
+def _fetch_df(table_name: str) -> pd.DataFrame:
+    if get_df_from_ibmi is None:
+        raise RuntimeError("No está disponible app.services.ibmi.get_df_from_ibmi")
+    df = get_df_from_ibmi(table_name)
+    if not isinstance(df, pd.DataFrame):
+        raise RuntimeError("get_df_from_ibmi no devolvió un DataFrame")
+    return df
 
 
 # ==========================
@@ -121,48 +125,59 @@ def _merged_pixels(ws, start_col: int, end_col: int) -> int:
 def _write_banner_and_logo(
     ws, cols: int, banner_hex: str, logo_path: Optional[str], row: int = 1
 ) -> None:
-    # 1) Franja roja (A1:Ex)
+    """
+    1) Pinta franja roja (A1:Ex).
+    2) Genera un PNG temporal **opaco**: lienzo rojo del MISMO ANCHO que la franja,
+       y pega encima el logo escalado **solo por altura**.
+    3) Inserta esa imagen y ajusta la altura de la fila 1.
+    """
+    # 1) Franja
     ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=cols)
     ws.cell(row=row, column=1).fill = PatternFill("solid", fgColor=_argb(banner_hex))
 
-    # 2) Logo escalado al ancho del merge y ajustando altura de la fila 1
     if not logo_path:
         return
+
     try:
-        img = XLImage(logo_path)
-        target_w = _merged_pixels(ws, 1, cols)
+        target_h_px = int(os.getenv("BANNER_LOGO_HEIGHT_PX", "70"))
+        left_pad = int(os.getenv("BANNER_LOGO_LEFT_PAD_PX", "12"))
 
-        # Escalar manteniendo proporción al ancho del banner
-        scale = target_w / float(img.width if img.width else 1)
-        img.width = int(target_w)
-        img.height = int(img.height * scale)
+        # 2) Lienzo rojo opaco del ANCHO del merge (A1:Ex)
+        banner_w_px = _merged_pixels(ws, 1, cols)
+        canvas_w = max(banner_w_px, 100)
+        canvas_h = target_h_px
+        canvas_rgb = PILImage.new("RGB", (canvas_w, canvas_h), "#" + banner_hex)
 
-        # Limitar altura para no desproporcionar
-        max_h_px = 70  # ajustable
-        if img.height > max_h_px:
-            s = max_h_px / float(img.height)
-            img.height = int(max_h_px)
-            img.width = int(img.width * s)
+        # 3) Cargar logo (puede tener alpha) y escalar por altura
+        base = PILImage.open(logo_path).convert("RGBA")
+        scale = target_h_px / float(base.height or 1)
+        logo_w = max(1, int(base.width * scale))
+        logo_h = target_h_px
+        logo = base.resize((logo_w, logo_h), PILImage.LANCZOS)
 
-        # >>> Ajuste clave: altura de la fila 1 = altura del logo (px -> puntos)
-        # Excel maneja alto de fila en "puntos" (1 pt ≈ 1/72 in). A 96 DPI: 1 px ≈ 0.75 pt.
-        px_to_pt = 0.75
-        ws.row_dimensions[row].height = img.height * px_to_pt  # p.ej. 70 px ≈ 52.5 pt
+        # 4) Pegar logo sobre lienzo rojo
+        x = max(0, min(left_pad, canvas_w - logo_w))
+        canvas_rgb.paste(logo, (x, 0), logo)
 
-        img.anchor = f"A{row}"
-        ws.add_image(img)
+        # 5) Guardar temporal e insertar
+        output_dir = os.getenv("OUTPUT_DIR", "/app/output").strip()
+        os.makedirs(output_dir, exist_ok=True)
+        tmp_path = os.path.join(output_dir, "__logo_banner_tmp.png")
+        canvas_rgb.save(tmp_path, "PNG")  # opaco
+
+        xlimg = XLImage(tmp_path)
+        xlimg.anchor = f"A{row}"
+        ws.add_image(xlimg)
+
+        # 6) Altura de la fila 1 (px -> pt ≈ 0.75)
+        ws.row_dimensions[row].height = target_h_px * 0.75
+
     except Exception:
+        # Si algo falla, al menos queda pintada la franja
         pass
 
 
 def _write_metadata_from_df(ws, df: pd.DataFrame, start_row: int = 2) -> int:
-    """
-    Escribe las primeras 6 filas del DF como metadatos:
-      - Col A: etiqueta (df.iloc[i,0])
-      - Col B: valor   (df.iloc[i,1])
-    **Ambos en negritas**.
-    Devuelve la siguiente fila disponible.
-    """
     meta = df.iloc[:6, :2].fillna("")
     r = start_row
     for _, (label, value) in meta.iterrows():
@@ -184,25 +199,18 @@ def _write_center_title(
 
 
 # ==========================
-# Preparación de detalle
+# Detalle
 # ==========================
 REQUIRED_HEADERS = ["FECHA", "DESCRIPCION", "DEBITO", "CREDITO", "SALDO CONTABLE"]
 
 
 def _prepare_detail(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Toma el DF original, usa filas 0..5 como metadatos y
-    devuelve el detalle desde la fila 6 en adelante con columnas:
-    FECHA, DESCRIPCION, DEBITO, CREDITO, SALDO CONTABLE.
-    """
     if len(df) <= 6:
-        raise ValueError(
-            "La tabla no contiene suficiente información (se requieren al menos 7 filas)."
-        )
+        raise ValueError("Se requieren al menos 7 filas (6 meta + detalle).")
 
     detail = df.iloc[6:].reset_index(drop=True).copy()
 
-    # Intentar por nombres
+    # Map por nombre o por posición
     cols = {c.upper().strip(): c for c in detail.columns}
     mapping = {}
     if "FECHA" in cols:
@@ -219,30 +227,27 @@ def _prepare_detail(df: pd.DataFrame) -> pd.DataFrame:
         mapping["SALDO CONTABLE"] = cols["SALDO"]
 
     if len(mapping) < 5:
-        # Fallback por posición
         if detail.shape[1] < 5:
             raise ValueError("El detalle no tiene al menos 5 columnas.")
         sel = detail.iloc[:, :5]
         sel.columns = REQUIRED_HEADERS
     else:
         sel = detail[list(mapping.values())].copy()
-        sel.columns = REQUIRED_HEADERS  # renombra a los requeridos
+        sel.columns = REQUIRED_HEADERS
 
     # Normalizaciones
-    # FECHA -> fecha si posible
     try:
         sel["FECHA"] = pd.to_datetime(sel["FECHA"], errors="coerce").dt.date
     except Exception:
         pass
 
-    # Montos
     for col in ["DEBITO", "CREDITO", "SALDO CONTABLE"]:
         try:
             sel[col] = (
                 sel[col]
                 .astype(str)
-                .str.replace(".", "", regex=False)  # quita miles si vinieran con '.'
-                .str.replace(",", ".", regex=False)  # coma decimal -> punto
+                .str.replace(".", "", regex=False)
+                .str.replace(",", ".", regex=False)
             )
             sel[col] = pd.to_numeric(sel[col], errors="coerce")
         except Exception:
@@ -252,43 +257,29 @@ def _prepare_detail(df: pd.DataFrame) -> pd.DataFrame:
 
 
 # ==========================
-# Lectura de datos IBMi
-# ==========================
-def _fetch_df(table_name: str) -> pd.DataFrame:
-    if get_df_from_ibmi is None:
-        raise RuntimeError("No está disponible app.services.ibmi.get_df_from_ibmi")
-    df = get_df_from_ibmi(table_name)
-    if not isinstance(df, pd.DataFrame):
-        raise RuntimeError("get_df_from_ibmi no devolvió un DataFrame")
-    return df
-
-
-# ==========================
 # Export principal
 # ==========================
 def export_to_excel(
     tabla: str, archivo: str, metadata: Optional[Dict[str, Any]] = None
 ) -> Dict[str, Any]:
     """
-    Orden específico:
-      1) Banner rojo + logo (ancho completo, fila 1 ajustada a la altura del logo).
-      2) Metadatos = primeras 6 filas (negritas).
-      3) Título 'Consulta de movimientos' centrado.
-      4) Encabezados fijos: FECHA, DESCRIPCION, DEBITO, CREDITO, SALDO CONTABLE.
-      5) Detalle desde la 7ª fila del DF original.
+    1) Banner rojo + logo (sobre lienzo rojo del ancho del merge).
+    2) Metadatos (6 filas) en negrita.
+    3) Título 'Consulta de movimientos'.
+    4) Encabezados fijos.
+    5) Detalle desde la 7ª fila.
+    6) Freeze panes.
     """
     import time
 
     t0 = time.time()
 
-    # Config .env
     OUTPUT_DIR = os.getenv("OUTPUT_DIR", "/app/output").strip()
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
     BANNER_COLOR = _env_hex("BANNER_COLOR", "ED1C24")
     HEADER_GRAY = _env_hex("HEADER_GRAY", "F2F2F2")
     TEXT_DARK = _env_hex("TEXT_DARK", "333333")
-
     DEFAULT_BANNER_COLS = int(os.getenv("BANNER_COLS", "5") or "5")
 
     FTP_HOST = os.getenv("FTP_HOST", "").strip()
@@ -297,43 +288,31 @@ def export_to_excel(
     FTP_PASSWORD = os.getenv("FTP_PASSWORD", "").strip()
     FTP_DIR = os.getenv("FTP_DIR", "/").strip()
     FTP_TLS = os.getenv("FTP_TLS", "false").strip().lower() == "true"
-
     WRITE_LOCAL_COPY = os.getenv("WRITE_LOCAL_COPY", "true").strip().lower() != "false"
 
-    # Metadata del request
     meta = metadata or {}
     logo_path = _resolve_logo_path(meta.get("logo_path"))
     banner_cols_override = (
         int(meta["banner_cols_override"]) if meta.get("banner_cols_override") else None
     )
 
-    # 1) Traer DF
     df = _fetch_df(tabla)
-
-    # 2) Preparar detalle (desde fila 6)
     detail_df = _prepare_detail(df)
 
-    # 3) Workbook
     wb = Workbook()
     ws = wb.active
     ws.title = "Reporte"
 
-    # Cantidad de columnas del banner (usamos 5 para coincidir con el layout)
     banner_cols = banner_cols_override or 5 or DEFAULT_BANNER_COLS
-    banner_cols = max(banner_cols, 5)  # mínimo 5 para FECHA..SALDO CONTABLE
+    banner_cols = max(banner_cols, 5)
 
-    # Banner + logo (ajusta altura de la fila 1)
     _write_banner_and_logo(
         ws, cols=banner_cols, banner_hex=BANNER_COLOR, logo_path=logo_path, row=1
     )
 
-    # Metadatos (filas 2..7)
     next_row = _write_metadata_from_df(ws, df, start_row=2)
+    next_row += 1
 
-    # Fila en blanco
-    # next_row += 1
-
-    # Título centrado
     _write_center_title(
         ws,
         "Consulta de movimientos",
@@ -342,49 +321,44 @@ def export_to_excel(
         font_size=14,
         color_hex=TEXT_DARK,
     )
-
-    # Encabezados dos filas después
     header_row = next_row + 2
 
     # Encabezados fijos
-    for j, name in enumerate(
-        ["FECHA", "DESCRIPCION", "DEBITO", "CREDITO", "SALDO CONTABLE"], start=1
-    ):
+    for j, name in enumerate(REQUIRED_HEADERS, start=1):
         c = ws.cell(row=header_row, column=j, value=name)
         c.font = Font(bold=True)
         c.alignment = Alignment(horizontal="center")
         c.fill = PatternFill("solid", fgColor=_argb(HEADER_GRAY))
         c.border = _thin_border()
 
-    # Datos (a partir de la fila siguiente)
+    # Detalle
     r = header_row + 1
     for _, row_vals in detail_df.iterrows():
-        # FECHA (centrada + formato)
-        val_fecha = row_vals["FECHA"]
-        c_fecha = ws.cell(row=r, column=1, value=val_fecha)
-        c_fecha.border = _thin_border()
-        c_fecha.alignment = Alignment(horizontal="center")  # <<— centrado solicitado
-        if pd.notna(val_fecha):
-            c_fecha.number_format = "yyyy-mm-dd"
+        # FECHA centrada y con formato
+        vfecha = row_vals["FECHA"]
+        c = ws.cell(row=r, column=1, value=vfecha)
+        c.alignment = Alignment(horizontal="center")
+        c.border = _thin_border()
+        if pd.notna(vfecha):
+            c.number_format = "yyyy-mm-dd"
 
         # DESCRIPCION
-        c_desc = ws.cell(row=r, column=2, value=row_vals["DESCRIPCION"])
-        c_desc.border = _thin_border()
+        c = ws.cell(row=r, column=2, value=row_vals["DESCRIPCION"])
+        c.border = _thin_border()
 
-        # DEBITO, CREDITO, SALDO CONTABLE
+        # Montos
         for j, colname in enumerate(["DEBITO", "CREDITO", "SALDO CONTABLE"], start=3):
             v = row_vals[colname]
             c = ws.cell(row=r, column=j, value=(None if pd.isna(v) else float(v)))
-            c.border = _thin_border()
             c.alignment = Alignment(horizontal="right")
+            c.border = _thin_border()
             c.number_format = "#,##0.00"
 
         r += 1
 
-    # Autoajuste de columnas
     _autofit(ws, min_width=9, max_width=45)
+    ws.freeze_panes = ws.cell(row=header_row + 1, column=1)
 
-    # Guardar local
     local_xlsx = os.path.join(OUTPUT_DIR, f"{archivo}.xlsx")
     if WRITE_LOCAL_COPY:
         wb.save(local_xlsx)
@@ -393,7 +367,7 @@ def export_to_excel(
         wb.save(bio)
         bio.seek(0)
 
-    # FTP opcional (nombre remoto SIN extensión)
+    # FTP opcional
     uploaded_info = None
     if FTP_HOST and FTP_USER and FTP_PASSWORD and upload_file:
         remote_name = archivo
@@ -443,7 +417,7 @@ def export_to_excel(
 
 
 # ==========================
-# Endpoint HTTP
+# Endpoint
 # ==========================
 @router.post("/export")
 def export(req: ExportRequest = Body(...)) -> Dict[str, Any]:
