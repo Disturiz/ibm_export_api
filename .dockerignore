@@ -1,63 +1,24 @@
-# Python
+# Entornos / control de versiones
+venv
+.git
+.gitignore
+.vscode
+.idea
+
+# Caches / compilados
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
-*.pdb
-*.egg-info/
-*.egg
-
-# Virtualenvs
-.env
-.venv
-venv/
-ENV/
-
-# Configuración local
-*.db
-*.sqlite3
-.DS_Store
-*.swp
-*.swo
-
-# Archivos de entorno y secretos
-.env.local
-.env.development
-.env.production
-*.pem
-*.key
-*.crt
-
-# Logs
 *.log
-logs/
-output/
-tmp/
-*.tmp
+.DS_Store
 
-# Compilados
-*.class
-*.jar
-!jt400/jt400.jar   # mantenemos el jt400.jar
+# Artefactos locales
+output/*
+!output/.gitkeep
+*.xlsx
+*.csv
+*.zip
 
-# Git
-.git
-.gitignore
-
-# Docker
-.dockerignore
-Dockerfile*
-
-# Documentación y otros
-*.md
-*.rst
-*.txt
-*.pdf
-docs/
-notebooks/
-
-# IDEs/editores
-.vscode/
-.idea/
-*.iml
-*.code-workspace
+# Otros
+*.sqlite

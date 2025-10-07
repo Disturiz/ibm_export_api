@@ -1,16 +1,20 @@
-
 version: "3.9"
+
 services:
-  api:
+  ibm_export_api:
     build: .
-    container_name: ibm_export_api
+    container_name: ibm_container
+    # Usa las variables desde .env (ver notas abajo para la versión Docker)
+    env_file: .env
     ports:
       - "8000:8000"
-    env_file:
-      - .env
-    environment:
-      JAR_PATH: /app/jt400/jt400.jar
-      OUTPUT_DIR: /data/output
     volumes:
-      - ./output:/data/output
+      - ./output:/app/output       # <-- tu carpeta local a la carpeta del contenedor
+      - ./jt400/jt400.jar:/app/jt400/jt400.jar:ro
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

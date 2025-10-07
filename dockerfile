@@ -1,41 +1,37 @@
-FROM python:3.12-slim
+# Imagen base mínima
+FROM python:3.11-slim
 
-ENV PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1 DEBIAN_FRONTEND=noninteractive
+# Ajustes básicos de Python/pip
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1
 
-RUN set -eux; \
-    apt-get update; \
-    apt-get install -y --no-install-recommends \
-    openjdk-21-jre-headless \
-    ca-certificates \
-    ; \
-    rm -rf /var/lib/apt/lists/*
+# Paquetes del sistema:
+# - default-jre-headless: requerido por el driver JDBC (jt400.jar)
+# - curl: usado por el healthcheck del compose
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    default-jre-headless curl \
+    && rm -rf /var/lib/apt/lists/*
 
-# Descubre JAVA_HOME dinámicamente (sin hardcodear ruta)
-RUN set -eux; JAVA_BIN="$(readlink -f $(command -v java))"; \
-    JAVA_HOME="$(dirname $(dirname "$JAVA_BIN"))"; \
-    echo "export JAVA_HOME=$JAVA_HOME" > /etc/profile.d/java.sh
-ENV JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64
-# Usuario no root
-RUN useradd -m appuser
-
+# Carpeta de trabajo
 WORKDIR /app
 
-# Instala dependencias (asegúrate de tener este archivo en tu repo)
-COPY requirements.txt ./requirements.txt
-RUN python -m pip install --upgrade pip && \
-    python -m pip install --no-cache-dir -r requirements.txt
+# Instalar deps de Python
+COPY requirements.txt  .
+RUN pip install --no-cache-dir -r requirements.txt
 
-# CLASSPATH para jt400 (si copias el jar a /app/jt400/jt400.jar)
-ENV CLASSPATH="/app/jt400/jt400.jar:${CLASSPATH}"
+# Copiar código de la app y el jar de jt400
+COPY app ./app
+COPY jt400/jt400.jar ./jt400/jt400.jar
 
-# Copia el código
-COPY . /app
+# Carpeta para salidas
+RUN mkdir -p /app/output
 
-# Permisos
-RUN chown -R appuser:appuser /app
+# Usuario no root
+RUN useradd -ms /bin/bash appuser && chown -R appuser:appuser /app
 USER appuser
 
 EXPOSE 8000
 
-# Arranque
+# Arranque del servicio
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

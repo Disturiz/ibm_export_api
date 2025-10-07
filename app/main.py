@@ -1,44 +1,65 @@
 # app/main.py
-from __future__ import annotations
-
-from typing import Any, Dict, Optional
+from typing import Optional, Dict, Any
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
+import pandas as pd
 
-from app.exporter import export_to_excel
+from app.exporter import export, export_to_excel  # usa las dos rutas correctas
 
-app = FastAPI(title="IBM_EXPORT_API_MAIN")
+app = FastAPI(title="IBM i Export API", version="1.0.0")
 
 
-# ===== Models =====
 class ExportRequest(BaseModel):
-    tabla: str = Field(..., description="Nombre de la tabla en IBMi")
-    archivo: str = Field(..., description="Nombre base del archivo (sin .xlsx)")
-    metadata: Optional[Dict[str, Any]] = Field(
-        default=None,
-        description="Metadatos opcionales (logo_path, banner_cols_override, etc.)",
-    )
+    tabla: str
+    archivo: str
+    metadata: Optional[Dict[str, Any]] = None
 
 
-# ===== Endpoints =====
+class DemoRequest(BaseModel):
+    archivo: str
+    metadata: Optional[Dict[str, Any]] = None
+
+
 @app.get("/health")
-def health() -> Dict[str, Any]:
-    return {"ok": True, "service": "IBM_EXPORT_API_MAIN"}
+def health():
+    return {"status": "ok"}
 
 
 @app.post("/export")
-def export_endpoint(req: ExportRequest) -> Dict[str, Any]:
+def export_endpoint(req: ExportRequest):
+    """
+    Extrae del IBMi (tabla) y genera el Excel + FTP (sin extensión en remoto).
+    """
     try:
-        result = export_to_excel(
-            tabla=req.tabla, archivo=req.archivo, metadata=req.metadata or {}
-        )
-        if not result.get("ok"):
-            # export_to_excel ya retorna 'ok': False con 'error'
-            raise HTTPException(
-                status_code=500, detail=result.get("error", "Fallo al exportar")
-            )
-        return result
-    except HTTPException:
-        raise
+        return export(req.tabla, req.archivo, req.metadata or {})
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/export_demo")
+def export_demo(req: DemoRequest):
+    """
+    Genera un Excel de prueba con datos dummy y aplica el diseño.
+    """
+    try:
+        df = pd.DataFrame(
+            [
+                {
+                    "Fecha": "2025-09-30",
+                    "Descripción": "Abono",
+                    "Débito": 0.00,
+                    "Crédito": 150.00,
+                    "Saldo": 150.00,
+                },
+                {
+                    "Fecha": "2025-10-01",
+                    "Descripción": "Pago",
+                    "Débito": 25.00,
+                    "Crédito": 0.00,
+                    "Saldo": 125.00,
+                },
+            ]
+        )
+        return export_to_excel(df, req.archivo, req.metadata or {})
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))

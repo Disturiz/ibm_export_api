@@ -1,232 +1,300 @@
 # app/exporter.py
-from __future__ import annotations
 
 import os
-import time
-from typing import Dict, Any, Optional
+from io import BytesIO
+from typing import Optional, Dict, Any
 
-from dotenv import load_dotenv
+import pandas as pd
 from openpyxl import Workbook
-from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
+from openpyxl.styles import PatternFill, Font, Border, Side, Alignment
+from openpyxl.utils import get_column_letter
 from openpyxl.drawing.image import Image as XLImage
-from openpyxl.utils import get_column_letter  # <- para evitar MergedCell.column_letter
-
-from app.services.ibmi import get_df_from_ibmi
-from app.services.ftp import upload_file
-
-# ==========================
-# Carga .env y utilidades
-# ==========================
-load_dotenv()
-OUTPUT_DIR = os.getenv("OUTPUT_DIR", "./output").strip() or "./output"
-os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 
-def _env_color(key: str, default_hex: str) -> str:
-    v = (os.getenv(key, default_hex) or default_hex).strip()
-    return (v[1:] if v.startswith("#") else v).upper()
+# =========================
+# Utilidades de configuración
+# =========================
 
 
-def _env_int(key: str, default_val: int) -> int:
+def _env(name: str, default: Optional[str] = None) -> Optional[str]:
+    v = os.getenv(name)
+    return v if v not in (None, "") else default
+
+
+def _argb(hex_color: str) -> str:
+    """
+    Normaliza '#rrggbb' / 'rrggbb' / 'aarrggbb' -> 'aarrggbb'.
+    """
+    if not hex_color:
+        return "FF000000"
+    s = str(hex_color).strip().lstrip("#").upper()
+    if len(s) == 6:
+        return "FF" + s
+    if len(s) == 8:
+        return s
+    return "FF000000"
+
+
+def make_fill(color_hex: str) -> PatternFill:
+    """
+    Devuelve un PatternFill sólido a partir de un color hex.
+    (IMPORTANTE: usar fgColor/start_color/end_color válidos)
+    """
+    return PatternFill(fill_type="solid", fgColor=_argb(color_hex))
+
+
+def make_thin_border(color_hex: str) -> Border:
+    c = _argb(color_hex)
+    thin = Side(style="thin", color=c)
+    return Border(top=thin, left=thin, right=thin, bottom=thin)
+
+
+# =========================
+# Parámetros visuales / defaults
+# =========================
+
+# Colores (acepta "#RRGGBB" o "RRGGBB")
+BANNER_COLOR = _env("BANNER_COLOR", "#ED1C24")
+HEADER_GRAY = _env("HEADER_GRAY", "#F2F2F2")
+BORDER_GRAY = _env("BORDER_GRAY", "#D9D9D9")
+TEXT_DARK = _env("TEXT_DARK", "#333333")
+
+# Banner, logo y títulos
+BANNER_COLS = int(_env("BANNER_COLS", "6"))
+BANNER_HEIGHT_PX = int(_env("BANNER_HEIGHT_PX", "38"))
+LOGO_PATH_ENV = _env("LOGO_PATH", "app/assets/davivienda_oficial.png")
+LOGO_HEIGHT_PX = int(_env("LOGO_HEIGHT_PX", "28"))
+TITLE_TEXT = _env("TITLE_TEXT", "Consulta de movimientos")
+
+# Salida
+OUTPUT_DIR = _env("OUTPUT_DIR", "./output")
+
+
+# =========================
+# Servicios externos (opcionales)
+# =========================
+
+
+def _try_get_df_from_ibmi(table: str) -> pd.DataFrame:
+    """
+    Intenta importar y ejecutar un lector de IBMi.
+    Debe existir app.services.ibmi.get_df_from_ibmi(table: str) -> DataFrame
+    Si no existe, levanta RuntimeError.
+    """
     try:
-        return int(os.getenv(key, str(default_val)))
+        from app.services.ibmi import get_df_from_ibmi  # type: ignore
+    except Exception as e:
+        raise RuntimeError(
+            "No se encontró app.services.ibmi.get_df_from_ibmi(table)"
+        ) from e
+
+    # Algunas variantes no aceptan 'schema', usamos firma simple:
+    df = get_df_from_ibmi(table)
+    if not isinstance(df, pd.DataFrame):
+        raise RuntimeError("get_df_from_ibmi(table) no devolvió un DataFrame")
+    return df
+
+
+def _try_upload_ftp(
+    local_path: str, remote_name_no_ext: str
+) -> Optional[Dict[str, Any]]:
+    """
+    Sube el archivo al FTP (sin extensión en el nombre remoto).
+    Requiere app.services.ftp.upload_file(local_path, remote_name)
+    Retorna dict con info si sube, o None si no hay servicio disponible.
+    """
+    try:
+        from app.services.ftp import upload_file  # type: ignore
     except Exception:
-        return default_val
+        return None
+
+    try:
+        info = upload_file(local_path, remote_name_no_ext)
+        return info
+    except Exception as e:
+        return {"error": str(e)}
 
 
-# Colores / tamaños por .env
-BANNER_COLOR = _env_color("BANNER_COLOR", "ED1C24")
-HEADER_GRAY = _env_color("HEADER_GRAY", "F2F2F2")
-BORDER_GRAY = _env_color("BORDER_GRAY", "D9D9D9")
-TEXT_DARK = _env_color("TEXT_DARK", "333333")
-
-DEFAULT_BANNER_COLS = _env_int("BANNER_COLS", 6)
-DEFAULT_BANNER_HEIGHT = _env_int("BANNER_HEIGHT_PX", 38)
-DEFAULT_LOGO_HEIGHT = _env_int("LOGO_HEIGHT_PX", 28)
-DEFAULT_TITLE_TEXT = os.getenv("TITLE_TEXT", "Consulta de movimientos")
+# =========================
+# Construcción del Excel
+# =========================
 
 
-# ==========================
-# Estilos
-# ==========================
-def _border(thin: bool = True) -> Border:
-    style = "thin" if thin else "medium"
-    color = BORDER_GRAY
-    return Border(
-        left=Side(style=style, color=color),
-        right=Side(style=style, color=color),
-        top=Side(style=style, color=color),
-        bottom=Side(style=style, color=color),
-    )
-
-
-def _autofit_columns(
-    ws, from_col: int, to_col: int, min_width: float = 8.0, max_width: float = 60.0
-) -> None:
+def _apply_banner(ws, banner_cols: int, logo_path: Optional[str]):
     """
-    Autoajuste seguro: usa get_column_letter(col) en lugar de ws.cell(...).column_letter
-    para evitar errores con celdas fusionadas del banner.
+    Pinta la franja roja en fila 1, inserta logo en A1 y ajusta altura.
     """
-    for col in range(from_col, to_col + 1):
-        letter = get_column_letter(col)
-        width = min_width
-        for row in ws.iter_rows(min_row=1, max_col=to_col, max_row=ws.max_row):
-            val = row[col - 1].value
-            if val is None:
-                continue
-            s = str(val)
-            width = max(width, len(s) * 1.2 + 2)
-        ws.column_dimensions[letter].width = min(width, max_width)
+    # Altura de la fila 1
+    if BANNER_HEIGHT_PX > 0:
+        ws.row_dimensions[1].height = BANNER_HEIGHT_PX
 
+    # Relleno por celda en la fila 1
+    banner_fill = make_fill(BANNER_COLOR)
+    for col in range(1, banner_cols + 1):
+        ws.cell(row=1, column=col).fill = banner_fill
 
-# ==========================
-# Banner + título
-# ==========================
-def _render_banner_and_title(
-    ws,
-    *,
-    banner_cols: int,
-    logo_path: Optional[str],
-    logo_height_px: int,
-    banner_height_px: int,
-    title_text: str,
-) -> Dict[str, int]:
-    start_col, end_col = 1, max(1, banner_cols)
-
-    # Banner (fila 1 fusionada)
-    ws.merge_cells(start_row=1, start_column=start_col, end_row=1, end_column=end_col)
-    ws.cell(row=1, column=1).fill = PatternFill("solid", fgColor=BANNER_COLOR)
-    ws.row_dimensions[1].height = banner_height_px
-
-    # Logo (opcional)
+    # Insertar logo si existe
     if logo_path and os.path.exists(logo_path):
         try:
             img = XLImage(logo_path)
-            if logo_height_px and img.height:
-                ratio = logo_height_px / img.height
-                img.width = int(img.width * ratio)
-                img.height = int(img.height * ratio)
+            if LOGO_HEIGHT_PX > 0:
+                img.height = LOGO_HEIGHT_PX
             ws.add_image(img, "A1")
         except Exception:
+            # No interrumpir si el logo falla
             pass
 
-    # Título (fila 3)
-    title_row = 3
-    ws.merge_cells(
-        start_row=title_row, start_column=1, end_row=title_row, end_column=end_col
-    )
-    c_title = ws.cell(row=title_row, column=1, value=title_text)
-    c_title.font = Font(bold=True, size=14, color=TEXT_DARK)
-    c_title.alignment = Alignment(horizontal="center", vertical="center")
-    ws.row_dimensions[title_row].height = 24
-    return {"title_row": title_row}
+
+def _apply_title(ws, banner_cols: int):
+    """
+    Imprime el título en fila 2 y lo centra verticalmente.
+    """
+    ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=banner_cols)
+    title_cell = ws.cell(row=2, column=1, value=TITLE_TEXT)
+    title_cell.font = Font(size=14, bold=True, color=_argb(TEXT_DARK))
+    title_cell.alignment = Alignment(vertical="center")
+    # altura de la fila 2 (ligeramente mayor para respiración)
+    ws.row_dimensions[2].height = 22
 
 
-# ==========================
-# Tabla (sin bloque de metadatos)
-# ==========================
-def _render_table(ws, df, *, start_row: int) -> None:
-    # Encabezados
+def _write_table(ws, df: pd.DataFrame, start_row: int = 4, start_col: int = 1):
+    """
+    Escribe encabezado y datos iniciando en (start_row, start_col).
+    Retorna header_row y número de columnas.
+    """
     header_row = start_row
-    for idx, col in enumerate(df.columns, start=1):
-        c = ws.cell(row=header_row, column=idx, value=str(col))
-        c.font = Font(bold=True, color=TEXT_DARK)
-        c.alignment = Alignment(horizontal="center", vertical="center")
-        c.fill = PatternFill("solid", fgColor=HEADER_GRAY)
-        c.border = _border()
+
+    # Encabezado
+    for j, col_name in enumerate(df.columns, start=start_col):
+        ws.cell(row=header_row, column=j, value=str(col_name))
 
     # Datos
-    for r, row in enumerate(df.itertuples(index=False), start=header_row + 1):
-        for c, val in enumerate(row, start=1):
-            cell = ws.cell(row=r, column=c, value=val)
-            cell.alignment = Alignment(vertical="top")
-            cell.border = _border()
+    for i in range(df.shape[0]):
+        for j in range(df.shape[1]):
+            ws.cell(
+                row=header_row + 1 + i,
+                column=start_col + j,
+                value=df.iat[i, j],
+            )
 
-    _autofit_columns(ws, 1, len(df.columns))
+    return header_row, df.shape[1], df.shape[0]
 
 
-# ==========================
-# Generación completa
-# ==========================
-def write_excel(
-    df,
-    archivo: str,
-    *,
-    logo_path: Optional[str],
-    banner_cols_override: Optional[int],
-    title_text: Optional[str],
-    logo_height_px: Optional[int],
-    banner_height_px: Optional[int],
-) -> str:
+def _apply_table_styles(ws, header_row: int, start_col: int, ncols: int, nrows: int):
+    """
+    Aplica estilos a encabezado y cuerpo. Usa PatternFill/Borders correctos.
+    """
+    header_fill = make_fill(HEADER_GRAY)
+    header_font = Font(bold=True, color=_argb(TEXT_DARK))
+    header_border = make_thin_border(BORDER_GRAY)
+    data_border = make_thin_border(BORDER_GRAY)
+
+    # Encabezado
+    for j in range(ncols):
+        cell = ws.cell(row=header_row, column=start_col + j)
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.border = header_border
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+
+    # Datos
+    for i in range(nrows):
+        for j in range(ncols):
+            cell = ws.cell(row=header_row + 1 + i, column=start_col + j)
+            cell.border = data_border
+            val = cell.value
+            # Alineación simple: números a la derecha, resto centrado vertical
+            if isinstance(val, (int, float)):
+                cell.alignment = Alignment(horizontal="right", vertical="center")
+            else:
+                cell.alignment = Alignment(vertical="center")
+
+    # Ancho de columnas (auto básico)
+    for j in range(ncols):
+        col_letter = get_column_letter(start_col + j)
+        max_len = 0
+        for r in range(header_row, header_row + nrows + 1):
+            v = ws.cell(row=r, column=start_col + j).value
+            if v is None:
+                continue
+            max_len = max(max_len, len(str(v)))
+        ws.column_dimensions[col_letter].width = min(max(10, max_len + 2), 40)
+
+
+def _build_workbook(
+    df: pd.DataFrame, metadata: Optional[Dict[str, Any]] = None
+) -> Workbook:
+    """
+    Crea el workbook con banner+logo+título y la tabla (sin bloque de metadatos).
+    """
+    metadata = metadata or {}
     wb = Workbook()
     ws = wb.active
     ws.title = "Reporte"
 
-    # Parámetros (metadata > .env)
-    _title_text = title_text or DEFAULT_TITLE_TEXT
-    _logo_h = int(logo_height_px or DEFAULT_LOGO_HEIGHT)
-    _banner_h = int(banner_height_px or DEFAULT_BANNER_HEIGHT)
-    banner_cols_min = max(DEFAULT_BANNER_COLS, len(df.columns))
-    banner_cols = int(banner_cols_override or banner_cols_min)
-
-    # Banner + título
-    info = _render_banner_and_title(
-        ws,
-        banner_cols=banner_cols,
-        logo_path=logo_path,
-        logo_height_px=_logo_h,
-        banner_height_px=_banner_h,
-        title_text=_title_text,
+    # Banner ancho
+    banner_cols_override = metadata.get("banner_cols_override")
+    banner_cols = (
+        int(banner_cols_override)
+        if banner_cols_override
+        else max(BANNER_COLS, df.shape[1])
     )
 
-    # Tabla directamente bajo el título
-    table_start = info["title_row"] + 2
-    _render_table(ws, df, start_row=table_start)
+    # Banner + Logo
+    logo_path = metadata.get("logo_path") or LOGO_PATH_ENV
+    _apply_banner(ws, banner_cols, logo_path)
 
-    # Guardar local
-    safe_name = f"{archivo}.xlsx" if not archivo.lower().endswith(".xlsx") else archivo
-    out_path = os.path.abspath(os.path.join(OUTPUT_DIR, safe_name))
-    os.makedirs(os.path.dirname(out_path), exist_ok=True)
-    wb.save(out_path)
-    return out_path
+    # Título
+    _apply_title(ws, banner_cols)
+
+    # Tabla desde fila 4
+    header_row, ncols, nrows = _write_table(ws, df, start_row=4, start_col=1)
+    _apply_table_styles(ws, header_row, 1, ncols, nrows)
+
+    return wb
 
 
-# ==========================
-# Endpoint / lógica de exportación
-# ==========================
-def export_from_table(
-    tabla: str, archivo: str, metadata: Optional[Dict[str, Any]] = None
+# =========================
+# Funciones públicas
+# =========================
+
+
+def export_to_excel(
+    df: pd.DataFrame, archivo: str, metadata: Optional[Dict[str, Any]] = None
 ) -> Dict[str, Any]:
-    t0 = time.time()
-    meta = metadata or {}
+    """
+    Recibe un DataFrame y genera:
+      - archivo local en OUTPUT_DIR: {archivo}.xlsx
+      - (opcional) subida a FTP con nombre remoto SIN extensión (solo 'archivo')
+    """
+    if not isinstance(df, pd.DataFrame) or df.empty:
+        raise ValueError("El DataFrame está vacío o no es válido")
 
-    df = get_df_from_ibmi(tabla)
-    local_path = write_excel(
-        df,
-        archivo=archivo,
-        logo_path=meta.get("logo_path"),
-        banner_cols_override=meta.get("banner_cols_override"),
-        title_text=meta.get("title_text"),
-        logo_height_px=meta.get("logo_height_px"),
-        banner_height_px=meta.get("banner_height_px"),
-    )
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    local_path = os.path.join(OUTPUT_DIR, f"{archivo}.xlsx")
 
-    # Subida a FTP SIN extensión
-    remote_name = os.path.splitext(os.path.basename(local_path))[0]
-    uploaded = upload_file(local_path=local_path, remote_name=remote_name)
+    wb = _build_workbook(df, metadata)
+    wb.save(local_path)
 
-    elapsed_ms = int((time.time() - t0) * 1000)
-    return {
+    # Subida a FTP, sin extensión
+    ftp_info = _try_upload_ftp(local_path, archivo)
+
+    result = {
         "ok": True,
-        "table": tabla,
         "rows": int(df.shape[0]),
         "cols": int(df.shape[1]),
-        "uploaded_to": uploaded,
         "local_copy": local_path,
-        "elapsed_ms": elapsed_ms,
     }
+    if ftp_info is not None:
+        result["uploaded_to"] = ftp_info
+    return result
 
 
-# ---- Compatibilidad con main.py que importa export_to_excel ----
-def export_to_excel(tabla: str, archivo: str, metadata: dict | None = None) -> dict:
-    return export_from_table(tabla=tabla, archivo=archivo, metadata=metadata or {})
+def export(
+    tabla: str, archivo: str, metadata: Optional[Dict[str, Any]] = None
+) -> Dict[str, Any]:
+    """
+    Camino usado por el endpoint /export: extrae del IBMi y luego genera Excel.
+    """
+    df = _try_get_df_from_ibmi(tabla)
+    return export_to_excel(df, archivo, metadata or {})
