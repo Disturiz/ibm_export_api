@@ -53,10 +53,13 @@ def _argb(rgb_hex: str) -> str:
 
 
 def _resolve_logo_path(logo_path: Optional[str]) -> Optional[str]:
+    print(f"DEBUG: _resolve_logo_path called with logo_path={logo_path}")
     # If no path provided, try to find the logo in common locations
     if not logo_path:
         app_dir = os.path.dirname(os.path.abspath(__file__))  # .../app
         root_dir = os.path.dirname(app_dir)  # root of repo
+        
+        print(f"DEBUG: app_dir={app_dir}, root_dir={root_dir}")
         
         # Try these common locations in order
         common_locations = [
@@ -67,13 +70,19 @@ def _resolve_logo_path(logo_path: Optional[str]) -> Optional[str]:
         ]
         
         for loc in common_locations:
+            print(f"DEBUG: Checking location: {loc}")
             if os.path.exists(loc) and os.path.isfile(loc):
+                print(f"DEBUG: Found logo file at: {loc}")
                 return loc
             elif os.path.isdir(loc):
+                print(f"DEBUG: {loc} is a directory, searching for PNG files...")
                 # Look for any PNG file in the directory
                 for file in os.listdir(loc):
                     if file.lower().endswith('.png'):
-                        return os.path.join(loc, file)
+                        result = os.path.join(loc, file)
+                        print(f"DEBUG: Found PNG file: {result}")
+                        return result
+        print("DEBUG: No logo found in common locations")
         return None
     
     # If path is provided, resolve it
@@ -153,11 +162,19 @@ def _write_banner_and_logo(
        y pega encima el logo escalado **solo por altura**.
     3) Inserta esa imagen y ajusta la altura de la fila 1.
     """
+    print(f"DEBUG: _write_banner_and_logo called with logo_path={logo_path}, cols={cols}, row={row}")
+    
     # 1) Franja
     ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=cols)
     ws.cell(row=row, column=1).fill = PatternFill("solid", fgColor=_argb(banner_hex))
 
     if not logo_path:
+        print("DEBUG: No logo_path provided, skipping logo insertion")
+        return
+    
+    print(f"DEBUG: Attempting to insert logo from: {logo_path}")
+    if not os.path.exists(logo_path):
+        print(f"DEBUG: ERROR - Logo file does not exist at: {logo_path}")
         return
 
     try:
@@ -193,10 +210,14 @@ def _write_banner_and_logo(
 
         # 6) Altura de la fila 1 (px -> pt ≈ 0.75)
         ws.row_dimensions[row].height = target_h_px * 0.75
+        
+        print(f"DEBUG: Logo successfully inserted at A{row}")
 
-    except Exception:
+    except Exception as e:
         # Si algo falla, al menos queda pintada la franja
-        pass
+        print(f"DEBUG: ERROR inserting logo: {str(e)}")
+        import traceback
+        traceback.print_exc()
 
 
 def _write_metadata_from_df(ws, df: pd.DataFrame, start_row: int = 2) -> int:
@@ -315,11 +336,14 @@ def export_to_excel(
     meta = metadata or {}
     # Try to get logo_path from metadata, otherwise use default from environment or common paths
     logo_path_input = meta.get("logo_path")
+    print(f"DEBUG: logo_path from metadata: {logo_path_input}")
     if not logo_path_input:
         # Try to get from environment variable
         logo_path_input = os.getenv("DEFAULT_LOGO_PATH", "").strip()
+        print(f"DEBUG: DEFAULT_LOGO_PATH from env: {logo_path_input}")
     # Resolve the logo path
     logo_path = _resolve_logo_path(logo_path_input)
+    print(f"DEBUG: Resolved logo_path: {logo_path}")
     banner_cols_override = (
         int(meta["banner_cols_override"]) if meta.get("banner_cols_override") else None
     )
@@ -449,6 +473,14 @@ def export_to_excel(
 # ==========================
 @router.post("/export")
 def export(req: ExportRequest = Body(...)) -> Dict[str, Any]:
+    # Print the request body for debugging
+    print("\n" + "="*60)
+    print("REQUEST BODY:")
+    print(f"  tabla: {req.tabla}")
+    print(f"  archivo: {req.archivo}")
+    print(f"  metadata: {req.metadata}")
+    print("="*60 + "\n")
+    
     try:
         return export_to_excel(req.tabla, req.archivo, req.metadata)
     except Exception as e:
