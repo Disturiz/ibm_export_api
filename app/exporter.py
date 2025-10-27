@@ -53,8 +53,30 @@ def _argb(rgb_hex: str) -> str:
 
 
 def _resolve_logo_path(logo_path: Optional[str]) -> Optional[str]:
+    # If no path provided, try to find the logo in common locations
     if not logo_path:
+        app_dir = os.path.dirname(os.path.abspath(__file__))  # .../app
+        root_dir = os.path.dirname(app_dir)  # root of repo
+        
+        # Try these common locations in order
+        common_locations = [
+            os.path.join(root_dir, "assets", "davivienda_banner_fullred_h70.png"),
+            os.path.join(app_dir, "assets", "davivienda_banner_fullred_h70.png"),
+            os.path.join(root_dir, "assets"),
+            os.path.join(app_dir, "assets"),
+        ]
+        
+        for loc in common_locations:
+            if os.path.exists(loc) and os.path.isfile(loc):
+                return loc
+            elif os.path.isdir(loc):
+                # Look for any PNG file in the directory
+                for file in os.listdir(loc):
+                    if file.lower().endswith('.png'):
+                        return os.path.join(loc, file)
         return None
+    
+    # If path is provided, resolve it
     if not os.path.isabs(logo_path):
         app_dir = os.path.dirname(os.path.abspath(__file__))  # .../app
         cand = os.path.join(os.path.dirname(app_dir), logo_path)  # raíz repo
@@ -291,7 +313,13 @@ def export_to_excel(
     WRITE_LOCAL_COPY = os.getenv("WRITE_LOCAL_COPY", "true").strip().lower() != "false"
 
     meta = metadata or {}
-    logo_path = _resolve_logo_path(meta.get("logo_path"))
+    # Try to get logo_path from metadata, otherwise use default from environment or common paths
+    logo_path_input = meta.get("logo_path")
+    if not logo_path_input:
+        # Try to get from environment variable
+        logo_path_input = os.getenv("DEFAULT_LOGO_PATH", "").strip()
+    # Resolve the logo path
+    logo_path = _resolve_logo_path(logo_path_input)
     banner_cols_override = (
         int(meta["banner_cols_override"]) if meta.get("banner_cols_override") else None
     )
